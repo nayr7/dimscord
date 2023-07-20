@@ -172,6 +172,9 @@ proc messageCreate(s: Shard, data: JsonNode) {.async.} =
     asyncCheck s.client.events.message_create(s, msg)
 
 proc messageReactionAdd(s: Shard, data: JsonNode) {.async.} =
+
+    data["emoji"]{"guild_id"} = data{"guild_id"}
+
     var
         msg = Message(
             id: data["message_id"].str,
@@ -180,7 +183,7 @@ proc messageReactionAdd(s: Shard, data: JsonNode) {.async.} =
         user = s.cache.users.getOrDefault(data["user_id"].str,
             User(id: data["user_id"].str)
         )
-
+        
         emoji = newEmoji(data["emoji"])
         reaction = Reaction(emoji: emoji)
         exists = false
@@ -199,6 +202,7 @@ proc messageReactionAdd(s: Shard, data: JsonNode) {.async.} =
             exists = true
 
     if "guild_id" in data:
+        data["member"]{"guild_id"} = data["guild_id"]
         msg.guild_id = some data["guild_id"].str
         msg.member = some newMember(data["member"])
 
@@ -217,7 +221,10 @@ proc messageReactionAdd(s: Shard, data: JsonNode) {.async.} =
     asyncCheck s.client.events.message_reaction_add(s, msg, user, emoji, exists)
 
 proc messageReactionRemove(s: Shard, data: JsonNode) {.async.} =
+
+    data["emoji"]{"guild_id"} = data["guild_id"]
     let emoji = newEmoji(data["emoji"])
+
     var
         msg = Message(
             id: data["message_id"].str,
@@ -477,13 +484,17 @@ proc channelDelete(s: Shard, data: JsonNode) {.async.} =
     asyncCheck s.client.events.channel_delete(s, guild, gc, dm)
 
 proc guildMembersChunk(s: Shard, data: JsonNode) {.async.} =
-    let guild = s.cache.guilds.getOrDefault(data["guild_id"].str,
-        Guild(id: data["guild_id"].str)
-    )
-    let cacheuser = s.cache.preferences.cache_users
+    let 
+        guild = s.cache.guilds.getOrDefault(data["guild_id"].str,
+            Guild(id: data["guild_id"].str)
+        )
+        cacheuser = s.cache.preferences.cache_users
+ 
 
     for member in data["members"].elems:
+        member{"guild_id"} = data["guild_id"]
         if member["user"]["id"].str notin guild.members and cacheuser:
+
             guild.members[member["user"]["id"].str] = newMember(member)
 
             s.cache.users[member["user"]["id"].str] = newUser(member["user"])
@@ -496,7 +507,8 @@ proc guildMemberAdd(s: Shard, data: JsonNode) {.async.} =
         guild = s.cache.guilds.getOrDefault(data["guild_id"].str,
             Guild(id: data["guild_id"].str)
         )
-        member = newMember(data)
+
+    let member = newMember(data)
 
     guild.members[member.user.id] = member
 
@@ -515,6 +527,7 @@ proc guildMemberUpdate(s: Shard, data: JsonNode) {.async.} =
         )
 
         member = guild.members.getOrDefault(data["user"]["id"].str, Member(
+            guild_id: data["guild_id"].str,
             user: User(
                 id: data["user"]["id"].str
             )
@@ -549,7 +562,7 @@ proc guildMemberRemove(s: Shard, data: JsonNode) {.async.} =
             Guild(id: data["guild_id"].str)
         )
         member = guild.members.getOrDefault(data["user"]["id"].str,
-            Member(user: newUser(data["user"]))
+            Member(guild_id: data["guild_id"].str, user: newUser(data["user"]))
         )
 
     guild.members.del(member.user.id)
@@ -638,11 +651,13 @@ proc guildCreate(s: Shard, data: JsonNode) {.async.} =
     asyncCheck s.client.events.guild_create(s, guild)
 
 proc guildRoleCreate(s: Shard, data: JsonNode) {.async.} =
+    data["role"]{"guild_id"} = data["guild_id"]
+
     let
         guild = s.cache.guilds.getOrDefault(data["guild_id"].str,
             Guild(id: data["guild_id"].str)
         )
-        role = newRole(data["role"])
+        role = newRole(data["role"])    
 
     if guild.id in s.cache.guilds:
         guild.roles[role.id] = role
@@ -650,12 +665,16 @@ proc guildRoleCreate(s: Shard, data: JsonNode) {.async.} =
     asyncCheck s.client.events.guild_role_create(s, guild, role)
 
 proc guildRoleUpdate(s: Shard, data: JsonNode) {.async.} =
+    data["role"]{"guild_id"} = data["guild_id"]
+    
     let
         guild = s.cache.guilds.getOrDefault(data["guild_id"].str,
             Guild(id: data["guild_id"].str)
         )
         role = newRole(data["role"])
+
     var oldRole: Option[Role]
+
 
     if guild.id in s.cache.guilds:
         oldRole = some move guild.roles[role.id]
@@ -670,7 +689,8 @@ proc guildRoleDelete(s: Shard, data: JsonNode) {.async.} =
             Guild(id: data["guild_id"].str)
         )
         role = guild.roles.getOrDefault(data["role_id"].str, Role(
-            id: data["role_id"].str
+            id: data["role_id"].str,
+            guild_id: guild.id
         ))
 
     asyncCheck s.client.events.guild_role_delete(s, guild, role)

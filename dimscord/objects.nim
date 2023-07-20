@@ -479,6 +479,9 @@ proc newAuditLog*(data: JsonNode): AuditLog =
 proc newVoiceState*(data: JsonNode): VoiceState =
     result = ($data).fromJson(VoiceState)
 
+proc newEmoji*(data: JsonNode): Emoji =
+    result = ($data).fromJson(Emoji)
+
 proc renameHook(v: var Guild, fieldName: var string) {.used.} =
     if fieldName == "region":
         fieldName = "rtc_region"
@@ -495,7 +498,8 @@ proc parseHook(s: string, i: var int, g: var Guild) =
     g = new Guild
     g.id = data["id"].str # just in case
 
-    for v in data{"members"}.getElems:
+    for v in data["members"].getElems:
+        v{"guild_id"} = %g.id
         let member = v.newMember
         g.members[member.user.id] = member
 
@@ -527,6 +531,14 @@ proc parseHook(s: string, i: var int, g: var Guild) =
                     if p.user.id in g.members:
                         g.members[p.user.id].presence = p
                     g.presences[p.user.id] = p
+            of "roles":
+                for v in val.getElems:
+                    v{"guild_id"} = %g.id
+                    g.roles[v["id"].str] = v.newRole
+            of "emojis":
+                for v in val.getElems:
+                    v{"guild_id"} = %g.id
+                    g.emojis[v["id"].str] = v.newEmoji
             else:
                 if k != "members":
                     g[k] = val
@@ -544,9 +556,6 @@ proc newDMChannel*(data: JsonNode): DMChannel = # rip dmchannels
 
 proc newStageInstance*(data: JsonNode): StageInstance =
     result = ($data).fromJson(StageInstance)
-
-proc newEmoji*(data: JsonNode): Emoji =
-    result = ($data).fromJson(Emoji)
 
 proc newInvite*(data: JsonNode): Invite =
     result = ($data).fromJson(Invite)

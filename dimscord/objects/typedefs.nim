@@ -182,7 +182,7 @@ type
         user*: User
         nick*, premium_since*, avatar*: Option[string]
         communication_disabled_until*: Option[string]
-        joined_at*: string
+        guild_id*, joined_at*: string
         roles*: seq[string]
         deaf*, mute*: bool
         pending*: Option[bool]
@@ -204,7 +204,7 @@ type
         emoji*: Emoji
         reacted*: bool
     Emoji* = object
-        id*, name*: Option[string]
+        id*, guild_id*, name*: Option[string]
         require_colons*, animated*: Option[bool]
         managed*, available*: Option[bool]
         user*: Option[User]
@@ -400,7 +400,7 @@ type
     EntityMetadata* = object
         location*: Option[string]
     Role* = object
-        id*, name*, permissions_new*: string
+        id*, guild_id*, name*, permissions_new*: string
         icon*, unicode_emoji*: Option[string]
         color*, position*: int
         permissions*: set[PermissionFlags]
