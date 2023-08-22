@@ -1,6 +1,8 @@
 # <img src="assets/dimscord.png" width="42px" height="32px"/>  Dimscord
 A Discord Bot & REST Library for Nim. [Discord API Channel](https://discord.gg/7jgdC9E) and [Dimscord Server for help](https://discord.gg/dimscord)
 
+> This is my personal experimental branch, all sort of weird stuff in here; you've been warned ...
+
 Why Dimscord?
  * It is minimalistic and efficient. 
  * Nim is a good programming language and I believe that Nim should stand a chance on having an up-to-date, substantial discord library.
