@@ -359,6 +359,24 @@ proc recvDiscovery(v: VoiceClient) {.async.} =
     # Read the port at the end
     v.srcPort = (packet[^2].ord) or (packet[^1].ord shl 8)
 
+proc waitForReady*(v: VoiceClient) {.async.} =
+    ## Wait for when the bot is ready to play audio, this is necessary before
+    ## using `playFFmpeg` or `playYTDL`.
+    while not v.ready:
+        await sleepAsync 0
+
+proc updateSpeaking(v: VoiceClient, should_speak: bool) {.async.} =
+    await v.sendSpeaking(should_speak)
+    v.speaking = should_speak
+    asyncCheck v.voice_events.on_speaking(v, should_speak)
+
+proc resume*(v: VoiceClient) {.async.} =
+    ## Continue playing audio
+    await v.updateSpeaking(true)
+    v.paused = false
+    v.start = float64(getMonoTime().ticks.int / 1_000_000_000)
+    v.loops = 0
+
 proc handleSocketMessage(v: VoiceClient) {.async.} =
     var packet: (Opcode, string)
 
@@ -401,7 +419,7 @@ proc handleSocketMessage(v: VoiceClient) {.async.} =
             dataVoiceOp = VoiceOp(data["op"].num)
 
         case dataVoiceOp
-        of Hello: # TODO: resume (after v1.4.0)
+        of Hello: # TODO: resume (after v1.6.0)
             logVoice "Received 'HELLO' from the voice gateway."
             v.interval = int data["d"]["heartbeat_interval"].getFloat
 
@@ -441,12 +459,7 @@ proc handleSocketMessage(v: VoiceClient) {.async.} =
             v.ready = true
             if v.migrate:
                 v.migrate = false
-                if v.paused:
-                    v.paused = false
-
-                    v.speaking = true # we should speak as we resume
-                    await v.sendSpeaking(true)
-                    asyncCheck v.voice_events.on_speaking(v, true)
+                if v.paused: await v.resume()# we should speak as we resume
 
             asyncCheck v.voice_events.on_ready(v)
         else: discard
@@ -488,26 +501,13 @@ proc startSession*(v: VoiceClient) {.async.} =
         if not getCurrentExceptionMsg()[0].isAlphaNumeric: return
         raise
 
-proc pause*(v: VoiceClient) =
-    ## Pause the current audio
-    v.paused = true
-
-proc resume*(v: VoiceClient) =
-    ## Continue playing audio
-    v.paused = false
-
-proc unpause*(v: VoiceClient) =
-    ## (Alias) same as resume
-    v.paused = false
-
-proc stop*(v: VoiceClient) =
+proc stopPlaying*(v: VoiceClient) =
     ## Stop the current audio
     v.stopped = true
     v.data = ""
 
 proc elapsed*(v: VoiceClient): float =
-    ## Shows the elapsed time
-    ## Note: this may be inaccurate.
+    ## Shows the elapsed time in seconds.
     (v.sent*20)/1000
 
 proc sendAudioPacket*(v: VoiceClient, data: string) {.async.} =
@@ -528,8 +528,6 @@ proc sendAudioPacket*(v: VoiceClient, data: string) {.async.} =
 
     if v.encryptMode != Normal:
         packet &= nonce
-    while v.paused:
-        continue
     await v.sendUDPPacket(packet)
 
 proc incrementPacketHeaders(v: VoiceClient) =
@@ -543,6 +541,19 @@ proc incrementPacketHeaders(v: VoiceClient) =
     else:
         v.time = 0
 
+proc pause*(v: VoiceClient) {.async.} =
+    ## Pause the current audio
+    v.paused = true
+    for i in 1..5:
+        await v.sendAudioPacket silencePacket
+        incrementPacketHeaders v
+        await sleepAsync idealLength
+    await v.updateSpeaking(false)
+
+proc unpause*(v: VoiceClient) {.async.} =
+    ## (Alias) same as resume
+    await v.resume()
+
 proc play*(v: VoiceClient, input: Stream | Process) {.async.} =
     ## Plays audio data that comes from a stream or process.
     ## Audio **must** be 2 channel, 48k sample rate, PCM encoded byte stream.
@@ -551,16 +562,15 @@ proc play*(v: VoiceClient, input: Stream | Process) {.async.} =
     if v.paused: v.paused = false
     v.stopped = false
 
-    await v.sendSpeaking(true)
-    v.speaking = true
-    asyncCheck v.voice_events.on_speaking(v, true)
+    while v.start != 0.0:
+        await sleepAsync 20
+
+    await v.updateSpeaking(true)
 
     when input is Stream:
         let stream = input
-        let atEnd = proc (): bool = stream.atEnd
     else:
         let stream = input.outputStream
-        let atEnd = proc (): bool = not input.running
 
     while stream.atEnd:
         await sleepAsync 1000
@@ -572,12 +582,11 @@ proc play*(v: VoiceClient, input: Stream | Process) {.async.} =
         start:   float64
         counts:  float64
         elapsed: float64
-    while not atEnd() and not v.stopped:
-        while v.paused:
-            await sleepAsync 1
-
-        if v.loops == 0 or v.start == 0.0:
-            v.start = float64(getMonoTime().ticks.int / 1_000_000_000)
+    while (not stream.atEnd() or input.running) and not v.stopped:
+        if v.loops == 0:
+            if v.start == 0.0:
+                v.start = float64(getMonoTime().ticks.int / 1_000_000_000)
+                start = v.start
             start = v.start
 
         v.data = newStringOfCap(dataSize)
@@ -588,13 +597,13 @@ proc play*(v: VoiceClient, input: Stream | Process) {.async.} =
             v.data &= stream.readStr(dataSize - v.data.len)
             dec attempts
             if v.data.len != dataSize:
-                await sleepAsync 500 # reading data may take a little bit long so sleep for 500ms
+                await sleepAsync 1000
             else:
                 break
 
         if attempts == 0:
             logVoice("Couldn't read needed amount of data in time\n  Data size: " & $v.data.len)
-            return
+            continue
 
         v.sent += 1
         v.loops += 1
@@ -641,12 +650,14 @@ proc play*(v: VoiceClient, input: Stream | Process) {.async.} =
 
         await sleepAsync float(delay * 1000) + offset
 
+        while v.paused:
+            await sleepAsync 1
+
+    v.start = 0.0
+    v.loops = 0
     v.stopped = false
-    if not v.paused: v.data = ""
+    v.data = ""
     v.paused = false
-    # not 100% sure if this might cause issues, but i'll leave it commented
-    # v.loops = 0
-    # v.start = 0.0
     v.sent = 0
     v.time = 0
     v.sequence = 0
@@ -656,9 +667,7 @@ proc play*(v: VoiceClient, input: Stream | Process) {.async.} =
         incrementPacketHeaders v
         await sleepAsync idealLength
 
-    await v.sendSpeaking(false)
-    v.speaking = false
-    asyncCheck v.voice_events.on_speaking(v, false)
+    await v.updateSpeaking(false)
 
 proc exeExists(exe: string): bool =
     ## Returns true if `exe` can be found
@@ -667,7 +676,7 @@ proc exeExists(exe: string): bool =
 proc playFFMPEG*(v: VoiceClient, path: string) {.async.} =
     ## Gets audio data by passing input to ffmpeg (so input can be anything that ffmpeg supports).
     ## Requires `ffmpeg` be installed.
-    let args = @[
+    var args = @[
         "-i",
         path,
         "-loglevel",
@@ -680,9 +689,10 @@ proc playFFMPEG*(v: VoiceClient, path: string) {.async.} =
         "2",
         "pipe:1"
     ]
-
-    if not path.fileExists and not path.startsWith("http"):
-      raise (ref IOError)(msg: fmt"File {path} does not exist")
+    if path.startsWith("http"):
+        args = concat(@["-reconnect", "1"], args)
+    elif not path.fileExists:
+        raise (ref IOError)(msg: fmt"File {path} does not exist")
 
     doAssert exeExists("ffmpeg"), "Cannot find ffmpeg, make sure it is installed"
     let pid = startProcess("ffmpeg", args = args, options = {
@@ -690,13 +700,14 @@ proc playFFMPEG*(v: VoiceClient, path: string) {.async.} =
     defer: pid.close()
     await v.play(pid)
 
-proc playYTDL*(v: VoiceClient, url: string; command = "youtube-dl") {.async.} =
-    ## Plays a youtube link using youtube-dl by default
-    ## Requires `youtube-dl` to be installed, if you want to use yt-dlp, then you can specify it.
+proc playYTDL*(v: VoiceClient, url: string; command = "yt-dlp") {.async.} =
+    ## Plays a youtube link using yt-dlp by default
+    ## Requires `yt-dlp` to be installed, if you want to use youtube-dl, then you can specify it.
     doAssert exeExists(command), "You need to install " & command
 
     let output = execProcess(
-        command, args = ["--get-url", url], options = {poUsePath, poStdErrToStdOut}
+        command, args = ["--get-url", url, "--no-warnings"],
+        options = {poUsePath, poStdErrToStdOut}
     )
     # doAssert exitCode == 0, "An error occurred:\n" & output
     let first = output.split("\n")[0]

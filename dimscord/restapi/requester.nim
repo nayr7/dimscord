@@ -76,11 +76,10 @@ proc discordDetailedErrors(errors: JsonNode, extra = ""): seq[string] =
         discard
 
 proc discordErrors(data: JsonNode): string =
-    result = "[DiscordError]:: " &
-        data["message"].str & " (" & $data["code"].getInt & ")"
+    result = data["message"].str & " (" & $data["code"].getInt & ")"
 
     if "errors" in data:
-        result &= "\n" & discordDetailedErrors(data["errors"]).join("\n")
+        result &= discordDetailedErrors(data["errors"]).join("\n")
 
 proc request*(api: RestApi, meth, endpoint: string;
             pl, audit_reason = ""; mp: MultipartData = nil;
@@ -132,7 +131,8 @@ proc request*(api: RestApi, meth, endpoint: string;
         ))
 
         try:
-            resp = await client.request(url, parseEnum[HttpMethod](meth), pl, multipart=mp)
+            resp = await client.request(url, parseEnum[HttpMethod](meth),
+                    pl, multipart=mp)
         except:
             r.processing = false
             raise
@@ -149,6 +149,7 @@ proc request*(api: RestApi, meth, endpoint: string;
         if retry_header > r.retry_after:
             r.retry_after = retry_header
 
+        var detailederr = false
         if status >= Http300:
             error = fin & "Client error."
 
@@ -163,13 +164,15 @@ proc request*(api: RestApi, meth, endpoint: string;
                             "Body took too long to parse.")
                     else:
                         data = (await body).parseJson
-                let detailederr = "code" in data and "message" in data
+
+                    if not data.isNil:
+                        detailederr = "code" in data and "message" in data
 
                 case status:
                 of Http400:
-                    error = fin & "Bad request.\n"
+                    error = fin & "Bad request."
                     if not data.isNil and not detailederr:#dont want duplicates
-                        error &= data.pretty()
+                        error &= "\n" & data.pretty()
                 of Http401:
                     error = fin & "Invalid authorization."
                     invalid_requests += 1
@@ -199,7 +202,7 @@ proc request*(api: RestApi, meth, endpoint: string;
                     error = fin & "Unknown error"
 
                 if detailederr and not data.isNil:
-                    error &= "\n\n - " & data.discordErrors()
+                    error &= "\n  * " & data.discordErrors()
 
             if status.is5xx:
                 error = fin & "Internal Server Error."
@@ -209,7 +212,13 @@ proc request*(api: RestApi, meth, endpoint: string;
                     error = fin & "Gateway timed out."
 
             if fatalErr:
-                raise newException(RestError, error)
+                raise DiscordHttpError(
+                    msg: error,
+                    code: data{"code"}.getInt(status.int),
+                    message: data{"message"}.getStr(
+                        error[fin.len..^1].split("\n")[0]),
+                    errors: %*data{"errors"}.getFields
+                )
             else:
                 echo error
 
@@ -254,19 +263,20 @@ proc request*(api: RestApi, meth, endpoint: string;
 
         result = data
     except:
-        var err = getCurrentExceptionMsg()
+        raise
 
-        if error != "":
-            err = error
+proc `%`*(t: tuple[
+        channel_id: string, duration_seconds: int,
+        custom_message: Option[string]
+    ]): JsonNode =
+    result = %*{
+        "channel_id":t.channel_id,
+        "duration_seconds":t.duration_seconds,
+    }
+    if t.custom_message.isSome: result["custom_message"] = %t.custom_message.get
 
-        if fatalErr:
-            raise newException(RestError, err)
-
-proc `%`*(t: tuple[channel_id: string, duration_seconds: int]): JsonNode =
-    %*{"channel_id":t.channel_id,"duration_seconds":t.duration_seconds}
-
-proc `%`*(tm: tuple[keyword_filter: seq[string], presets: seq[int]]): JsonNode =
-    %*{"keyword_filter":tm.keyword_filter,"presets":tm.presets}
+# proc `%`*(tm: tuple[keyword_filter: seq[string], presets: seq[int]]): JsonNode =
+#     %*{"keyword_filter":tm.keyword_filter,"presets":tm.presets}
 
 proc `%`*(o: Overwrite): JsonNode =
     %*{"id": o.id,
@@ -275,6 +285,15 @@ proc `%`*(o: Overwrite): JsonNode =
         "deny": %cast[int](o.deny)}
 
 proc `%`*(flags: set[MessageFlags]): JsonNode =
+    %cast[int](flags)
+
+proc `%`*(flags: set[AttachmentFlags]): JsonNode =
+    %cast[int](flags)
+
+proc `%`*(flags: set[ChannelFlags]): JsonNode =
+    %cast[int](flags)
+
+proc `%`*(flags: set[RoleFlags]): JsonNode =
     %cast[int](flags)
 
 proc `%`*(flags: set[PermissionFlags]): JsonNode =
