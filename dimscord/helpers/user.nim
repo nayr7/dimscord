@@ -1,4 +1,4 @@
-import asyncdispatch, options, json
+import asyncdispatch, options, json, tables
 # import ../restapi/[user, requester]
 import ../objects, ../constants
 
@@ -44,7 +44,7 @@ template getCommands*(app: Application;
 
 template getCommand*(app: Application; 
         guild_id = "";
-        command_id: string;
+        command_id: string
 ): Future[ApplicationCommand] =
     ## Get a single slash command for a specific Application, `guild_id` is optional.
     getClient.api.getApplicationCommand(
@@ -106,9 +106,11 @@ template delete*(apc: ApplicationCommand, guild_id = ""): Future[void] =
 
 template reply*(i: Interaction;
         content = "";
-        embeds: seq[Embed] = @[];
         components: seq[MessageComponent] = @[];
-        attachments: seq[Attachment] = @[];             
+        embeds: seq[Embed] = @[];
+        attachments: seq[Attachment] = @[];
+        allowed_mentions = default(AllowedMentions);
+        tts = none bool;
         ephemeral = false
 ): Future[void] =
     ## Respond to an Interaction.
@@ -120,24 +122,21 @@ template reply*(i: Interaction;
     let flag = if ephemeral: {mfEphemeral} else: {}
 
     getClient.api.interactionResponseMessage(
-        i.application_id,
-        i.token,
+        i.application_id, i.token,
         irtChannelMessageWithSource,
-        InteractionApplicationCommandCallbackData(
-            flags: flag,
-            content: content,
-            components: components,
-            attachments: attachments,
-            embeds: embeds
+        newInteractionData(
+            content, embeds, flag,
+            attachments, components,
+            allowed_mentions, tts
         )
     )
 
 template update*(i: Interaction;
         content = "";
-        embeds: seq[Embed] = @[];
-        flags: set[MessageFlags] = {};
-        attachments: seq[Attachment] = @[];
         components: seq[MessageComponent] = @[];
+        embeds: seq[Embed] = @[];
+        attachments: seq[Attachment] = @[];
+        flags: set[MessageFlags] = {};
         allowed_mentions = default(AllowedMentions);
         tts = none bool
 ): Future[void] =
@@ -165,10 +164,8 @@ template followup*(i: Interaction;
     ## - Use this function when sending messages to acknowledged Interactions.
     getClient.api.createFollowupMessage(
         i.application_id, i.token,
-        content, tts,
-        files, attachments,
-        embeds, allowed_mentions,
-        components,
+        content, tts, files, attachments,
+        embeds, allowed_mentions, components,
         flags = (if ephemeral: some mfEphemeral.ord else: none int)
     )
     
@@ -188,14 +185,14 @@ template edit*(i: Interaction;
     getClient.api.editInteractionResponse(
         i.application_id, i.token, message_id,
         content, embeds, allowed_mentions,
-        attachments, files,
-        components
+        attachments, files, components
     )
 
 
 template getResponse*(i: Interaction, message_id = "@original"): Future[Message] =
     ## Get the response (Message) to an Interaction
     proc msg(): Future[Message] {.async, gensym.} =
+        # TODO: that's pretty ugly, maybe improve it ?
         if i.message.isSome: 
             result = i.message.get
         else:
@@ -226,11 +223,12 @@ template deferResponse*(i: Interaction;
     )
 
 template suggest*(i: Interaction;
-        choices: seq[ApplicationCommandOptionChoice]
+        options: seq[ApplicationCommandOptionChoice]
 ): Future[void] =
     ## Create an interaction response which is an autocomplete response.
     getClient.api.interactionResponseAutocomplete(
-        i.id, i.token, InteractionCallbackDataAutocomplete(choices: choices))
+        i.id, i.token, InteractionCallbackDataAutocomplete(choices: options)
+    )
 
 template sendModal*(i: Interaction;
         response: InteractionCallbackDataModal
