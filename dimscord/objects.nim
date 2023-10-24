@@ -4,7 +4,7 @@
 ## * Fields that cannot be assumed. such as bools
 ## * Optional fields for example embeds, which they may not be
 ##   present.
-##   
+##
 ## Some may not be optional, but they can be assumable or always present.
 
 when (NimMajor, NimMinor, NimPatch) >= (1, 6, 0):
@@ -24,6 +24,25 @@ func fullSet*[T](U: typedesc[T]): set[T] {.inline.} =
         {T.low..T.high}
     else: # Hole filled enum
         enumElementsAsSet(T)
+
+proc newInteractionData*(
+        content: string,
+        embeds: seq[Embed],
+        flags: set[MessageFlags],
+        attachments: seq[Attachment],
+        components: seq[MessageComponent],
+        allowed_mentions: AllowedMentions,
+        tts: Option[bool]
+): InteractionCallbackDataMessage =
+    result = InteractionCallbackDataMessage(
+        content: content,
+        embeds:  embeds,
+        allowed_mentions: allowed_mentions,
+        flags: flags,
+        attachments: attachments,
+        components: components,
+        tts: tts
+    )
 
 proc newShard*(id: int, client: DiscordClient): Shard =
     result = Shard(
@@ -45,7 +64,7 @@ proc newDiscordClient*(token: string;
     var auth_token = token
     if not token.startsWith("Bot ") and not token.startsWith("Bearer "):
         auth_token = "Bot " & token
-    
+
     var apiVersion = restVersion
     when defined(discordv9):
         apiVersion = 9
@@ -100,6 +119,8 @@ proc newDiscordClient*(token: string;
                     u: User) {.async.} = discard,
             guild_ban_remove: proc (s: Shard, g: Guild,
                     u: User) {.async.} = discard,
+            guild_audit_log_entry_create: proc (s: Shard, g: Guild,
+                    e: AuditLogEntry) {.async.} = discard,
             guild_integrations_update: proc (s: Shard,
                     g: Guild) {.async.} = discard,
             guild_member_add: proc (s: Shard, g: Guild,
@@ -181,8 +202,28 @@ proc parseHook*(s: string, i: var int, v: var set[UserFlags]) =
     parseHook(s, i, number)
     v = cast[set[UserFlags]](number)
 
+proc parseHook*(s: string, i: var int, v: var set[GuildMemberFlags]) =
+    var number: BiggestInt
+    parseHook(s, i, number)
+    v = cast[set[GuildMemberFlags]](number)
+
+proc parseHook*(s: string, i: var int, v: var set[RoleFlags]) =
+    var number: BiggestInt
+    parseHook(s, i, number)
+    v = cast[set[RoleFlags]](number)
+
 proc newUser*(data: JsonNode): User =
     result = ($data).fromJson(User)
+
+proc parseHook(s: string, i: var int;
+        v: var seq[tuple[label, url: string]]) {.used.} =
+    var data: JsonNode
+    parseHook(s, i, data)
+    for btn in data:
+        if btn.kind == JString:
+            v.add (label: btn.getStr, url: "")
+        elif btn.kind == JObject:
+            v.add (label: btn{"label"}.getStr, url: btn{"url"}.getStr)
 
 proc postHook(p: var Presence) =
     if p.status == "": p.status = "offline"
@@ -212,8 +253,12 @@ proc parseHook*(s: string, i: var int, v: var set[PermissionFlags]) =
 
 proc newRole*(data: JsonNode): Role =
     result = ($data).fromJson(Role)
-    if "tags" in data and "premium_subscriber" in data["tags"]:
-        result.tags.get.premium_subscriber = some true
+    if "tags" in data:
+        let tag = data["tags"]
+        result.tags.get.premium_subscriber = some "premium_subscriber" in tag
+        result.tags.get.available_for_purchase = some(
+            "available_for_purchase" in tag)
+        result.tags.get.guild_connections = some "guild_connections" in tag
 
 proc newHook(m: var Member) =
     m = Member()
@@ -459,8 +504,8 @@ proc parseHook(s: string, i: var int, a: var AuditLogEntry) =
             else:
                 a[k] = val # incase
         of JObject:
-            if "opts" in data:
-                a.opts = some ($data["opts"]).fromJson AuditLogOptions
+            if "options" in data:
+                a.opts = some ($data["options"]).fromJson AuditLogOptions
         else:
             discard
 
@@ -855,7 +900,7 @@ proc `%%*`*(a: ApplicationCommandOption): JsonNode =
         )
 
 proc `%%*`*(a: ApplicationCommand): JsonNode =
-    assert a.name.len in 3..32
+    assert a.name.len in 1..32
     # This ternary is needed so that the enums can stay similar to
     # the discord api
     let commandKind = if a.kind == atNothing: atSlash else: a.kind

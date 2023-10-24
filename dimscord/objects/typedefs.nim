@@ -7,6 +7,13 @@ import std/asyncnet
 
 type
     RestError* = object of CatchableError
+    DiscordHttpError* = ref object of CatchableError
+        ## - `code` the status code e.g. 400 for a bad request.
+        ## - `message` the message field from the json e.g. "You are being rate-limited"
+        ## **Note:** if you want exception msg, it's DiscordHttpError.msg
+        code*: int
+        message*: string
+        errors*: JsonNode
     DiscordFile* = ref object
         ## A Discord file.
         name*, body*: string
@@ -20,13 +27,14 @@ type
         events*: Events
         token*: string
         shards*: Table[int, Shard]
+        waits*: WaitTable
         restMode*, autoreconnect*, guildSubscriptions*: bool
         largeThreshold*, gatewayVersion*, maxShards*: int
         intents*: set[GatewayIntent]
     Shard* = ref object
         ## This is where you interact with the gateway api with.
         ## It's basically a gateway connection.
-        ## 
+        ##
         ## For `voiceConnections`, the string is a guild_id.
         id*, sequence*: int
         client*: DiscordClient
@@ -48,7 +56,7 @@ type
         Lite = "xsalsa20_poly1305_lite"
     VoiceClient* = ref object
         ## Representing VoiceClient object
-        ## You can also change the values of the fields 
+        ## You can also change the values of the fields
         ##
         ## For example: `v.sleep_offset = 0.96`
         ## But this may cause some effects.
@@ -159,6 +167,7 @@ type
         thread*: Option[GuildChannel]
         application*: Option[Application]
         interaction*: Option[MessageInteraction]
+        role_subscription_data*: Option[RoleSubscriptionData]
         message_reference*: Option[MessageReference]
         sticker_items*: Table[string, tuple[
             id, name: string,
@@ -169,13 +178,15 @@ type
         ## The fields for bot and system are false by default
         ## simply because they are assumable.
         id*, username*, discriminator*: string
-        banner*: Option[string]
+        global_name*, display_name*: Option[string]
+        banner*, banner_color*: Option[string]
         bot*, system*: bool
         mfa_enabled*: Option[bool]
-        accent_color*, premium_type*: Option[int]
+        accent_color*: Option[int]
+        premium_type*: Option[UserPremiumType]
         flags*: set[UserFlags]
         public_flags*: set[UserFlags]
-        avatar*, locale*: Option[string]
+        avatar*, avatar_decoration*, locale*: Option[string]
     Member* = ref object
         ## - `permissions` Returned in the interaction object.
         ## Be aware that Member.user could be nil in some cases.
@@ -186,6 +197,7 @@ type
         roles*: seq[string]
         deaf*, mute*: bool
         pending*: Option[bool]
+        flags*: set[GuildMemberFlags]
         permissions*: set[PermissionFlags]
         presence*: Presence
         voice_state*: Option[VoiceState]
@@ -193,10 +205,11 @@ type
         ## `file` is used for sending/editing attachments.
         ## `file` is like `body` in DiscordFile, but for attachments.
         id*, filename*: string
-        description*, content_type*: Option[string]
+        description*, content_type*, waveform*: Option[string]
         proxy_url*, url*: string
         file*: string
         height*, width*: Option[int]
+        flags: set[AttachmentFlags]
         ephemeral*: Option[bool]
         size*: int
     Reaction* = object
@@ -229,6 +242,10 @@ type
         stickers*: seq[Sticker]
         sku_id*, banner_asset_id*: string
         cover_sticker_id*: Option[string]
+    RoleSubscriptionData* = object
+        tier_name*, role_susbcription_listing_id*: string
+        total_months_subscribed*: int
+        is_renewal*: bool
     RestApi* = ref object
         token*: string
         endpoints*: Table[string, Ratelimit]
@@ -260,7 +277,8 @@ type
     GuildChannel* = ref object
         id*, name*, guild_id*: string
         nsfw*: bool
-        parent_id*: Option[string]
+        topic*, parent_id*, owner_id*: Option[string]
+        last_pin_timestamp*: Option[string]
         permission_overwrites*: Table[string, Overwrite]
         position*: Option[int]
         default_auto_archive_duration*: Option[int]
@@ -269,8 +287,6 @@ type
         messages*: Table[string, Message]
         last_message_id*: string
         case kind*: ChannelType
-        of ctGuildText, ctGuildNews:
-            topic*: Option[string]
         of ctGuildVoice, ctGuildStageVoice:
             rtc_region*: Option[string]
             video_quality_mode*: Option[int]
@@ -317,9 +333,12 @@ type
         member_count*: int
         added_members*: seq[ThreadMember]
         removed_member_ids*: seq[string]
-    GameAssets* = object
+    ActivityAssets* = object
+        ## Read more at:
+        ## https://discord.com/developers/docs/topics/gateway-events#activity-object-activity-asset-image
         small_text*, small_image*: string
         large_text*, large_image*: string
+    GameAssets* = ActivityAssets
     Activity* = object
         name*: string
         kind*: ActivityType
@@ -328,10 +347,10 @@ type
         created_at*: BiggestFloat
         timestamps*: Option[tuple[start, final: BiggestFloat]]
         emoji*: Option[Emoji]
-        party*: Option[tuple[id: string, size: seq[int]]]
-        assets*: Option[GameAssets]
+        party*: Option[tuple[id: string, size: seq[int]]] ## todo
+        assets*: Option[ActivityAssets]
         secrets*: Option[tuple[join, spectate, match: string]]
-        buttons*: seq[string]
+        buttons*: seq[tuple[label, url: string]]
         instance*: bool
     Presence* = ref object
         user*: User
@@ -350,10 +369,12 @@ type
         icon*, splash*, discovery_splash*: Option[string]
         afk_channel_id*, vanity_url_code*, application_id*: Option[string]
         widget_channel_id*, system_channel_id*, joined_at*: Option[string]
+        safety_alerts_channel_id*: Option[string]
         system_channel_flags*: set[SystemChannelFlags]
         permissions*: set[PermissionFlags]
         premium_progress_bar_enabled*, nsfw*, owner*, widget_enabled*: bool
         large*, unavailable*: Option[bool]
+        max_stage_video_channel_uses*: Option[int]
         max_video_channel_uses*, afk_timeout*, member_count*: Option[int]
         approximate_member_count*, approximate_presence_count*: Option[int]
         max_presences*, max_members*, premium_subscription_count*: Option[int]
@@ -390,7 +411,7 @@ type
         privacy_level*: GuildScheduledEventPrivacyLevel
         status*: GuildScheduledEventStatus
         entity_type*: EntityType
-        entity_metadata*: EntityMetadata
+        entity_metadata*: Option[EntityMetadata]
         creator*: Option[User]
         user_count*: Option[int]
     GuildScheduledEventUser* = object
@@ -406,9 +427,17 @@ type
         permissions*: set[PermissionFlags]
         hoist*, managed*, mentionable*: bool
         tags*: Option[RoleTag]
+        flags*: set[RoleFlags]
     RoleTag* = object
         bot_id*, integration_id*: Option[string]
+        subscription_listing_id*: Option[string]
         premium_subscriber*: Option[bool] #no idea what type is supposed to be
+        available_for_purchase*, guild_connections*: Option[bool]
+    TriggerMetadata* = object
+        keyword_filter*, regex_patterns*, allow_list*: seq[string]
+        presets*: seq[KeywordPresetType]
+        mention_total_limit*: int
+        mention_raid_protection_enabled*: bool
     AutoModerationRule* = object
         ## trigger_metadata info: https://discord.com/developers/docs/resources/auto-moderation#auto-moderation-rule-object-trigger-metadata
         ## event_type: https://discord.com/developers/docs/resources/auto-moderation#auto-moderation-rule-object-event-types
@@ -416,19 +445,39 @@ type
         id*, guild_id*, name*, creator_id*: string
         event_type*: int
         trigger_type*: ModerationTriggerType
-        trigger_metadata*: tuple[keyword_filter: seq[string], presets: seq[int]]
+        trigger_metadata*: TriggerMetadata
         actions*: seq[ModerationAction]
         enabled*: bool
         exempt_roles*, exempt_channels*: seq[string]
     ModerationAction* = object
         kind*: ModerationActionType
-        metadata*: tuple[channel_id: string, duration_seconds: int]
+        metadata*: tuple[
+            channel_id: string,
+            duration_seconds: int,
+            custom_message: Option[string]
+        ]
     ModerationActionExecution* = object
         guild_id*, rule_id*, user_id*, content*: string
         channel_id*, message_id*, alert_system_message_id*: Option[string]
         matched_keyword*, matched_content*: Option[string]
         action*: ModerationAction
         rule_trigger_type*: ModerationTriggerType
+    GuildOnboarding* = object
+        guild_id*: string
+        prompts*: seq[GuildOnboardingPrompt]
+        default_channel_ids*: seq[string]
+        enabled*: bool
+        mode*: GuildOnboardingMode
+    GuildOnboardingPrompt* = object
+        id*, title*: string
+        kind*: GuildOnboardingPromptType
+        options*: seq[GuildOnboardingPromptOption]
+        single_select*, required*, in_onboarding*: bool
+    GuildOnboardingPromptOption* = object
+        id*, title*: string
+        description*: Option[string]
+        channel_ids*, role_ids*: seq[string]
+        emoji*: Emoji
     GuildTemplate* = object
         code*, name*, creator_id*: string
         description*: Option[string]
@@ -455,6 +504,7 @@ type
     PartialChannel* = object
         id*, name*: string
         kind*: ChannelType
+    SomeChannel* = DMChannel|GuildChannel
     Channel* = object
         ## Used for creating guilds.
         name*, parent_id*: string
@@ -471,14 +521,17 @@ type
         members*: seq[TeamMember]
     Application* = object
         id*, description*, name*: string
+        summary*, verify_key*: string
         rpc_origins*, tags*: seq[string]
+        approximate_guild_count*: Option[int]
         bot_public*, bot_require_code_grant*: bool
         terms_of_service_url*, privacy_policy_url*: Option[string]
         guild_id*, custom_install_url*: Option[string]
-        owner*: User
-        summary*, verify_key*: string
-        team*: Option[Team]
         icon*, primary_sku_id*, slug*, cover_image*: Option[string]
+        role_connections_verification_url*: Option[string]
+        owner*: User
+        guild*: PartialGuild
+        team*: Option[Team]
         flags*: set[ApplicationFlags]
         install_params*: tuple[scopes: seq[string], permissions: string]
     ApplicationCommand* = object
@@ -486,10 +539,10 @@ type
         guild_id*: Option[string]
         kind*: ApplicationCommandType
         name*, description*: string
-        name_localizations*, description_localizations*: Option[Table[string, string]]
-        default_permission*: bool
+        name_localizations*: Option[Table[string, string]]
+        description_localizations*: Option[Table[string, string]]
         default_member_permissions*: Option[set[PermissionFlags]]
-        dm_permission*: Option[bool]
+        default_permission*, nsfw*, dm_permission*: Option[bool]
         options*: seq[ApplicationCommandOption]
     GuildApplicationCommandPermissions* = object
         id*, application_id*, guild_id*: string
@@ -498,10 +551,19 @@ type
         id*: string ## ID of role or user
         kind*: ApplicationCommandPermissionType
         permission*: bool ## true to allow, false to disallow
+    ApplicationRoleConnectionMetadata* = object
+        kind*: RoleConnectionMetadataType
+        key*, name*, description*: string
+        name_localizations*: Option[Table[string, string]]
+        description_localizations*: Option[Table[string, string]]
+    ApplicationRoleConnection* = object
+        platform_name*, platform_username*: Option[string]
+        metadata*: Table[string, string]
     ApplicationCommandOption* = object
         kind*: ApplicationCommandOptionType
         name*, description*: string
-        name_localizations*, description_localizations*: Option[Table[string, string]]
+        name_localizations*: Option[Table[string, string]]
+        description_localizations*: Option[Table[string, string]]
         required*, autocomplete*: Option[bool]
         channel_types*: seq[ChannelType]
         min_value*, max_value*: (Option[BiggestInt], Option[float])
@@ -643,7 +705,7 @@ type
         guild_id*: Option[string]
         uses*, max_uses*, max_age*: int
         channel_id*: string
-        inviter*, taget_user*: Option[User]
+        inviter*, target_user*: Option[User]
         target_type*: Option[InviteTargetType]
         target_application*: Option[Application]
         temporary*: bool
@@ -729,6 +791,8 @@ type
         deprecated*, custom*: bool
     AuditLogOptions* = object
         ## - `kind` ("role" or "member") or (0 or 1)
+        auto_moderation_rule_name*: Option[string]
+        auto_moderation_rule_trigger_type*: Option[string]
         delete_member_days*, members_removed*: Option[string]
         channel_id*, count*, role_name*: Option[string]
         id*, message_id*, application_id*: Option[string]
@@ -756,6 +820,7 @@ type
     AuditLog* = object
         webhooks*: seq[Webhook]
         users*: seq[User]
+        application_commands*: seq[ApplicationCommand]
         audit_log_entries*: seq[AuditLogEntry]
         integrations*: seq[Integration]
         threads*: seq[GuildChannel]
@@ -783,63 +848,66 @@ type
         session_start_limit*: GatewaySession
     Events* = ref object
         ## An object containing events that can be changed.
-        ## 
+        ##
         ## - `exists` Checks message is cached or not. Other cachable objects dont have them.
-        ## 
+        ##
         ## - `on_dispatch` event gives you the raw event data for you to handle things.
         ## [For reference](https://discord.com/developers/docs/topics/gateway#commands-and-events-gateway-events)
         on_dispatch*: proc (s: Shard, evt: string, data: JsonNode) {.async.}
         on_ready*: proc (s: Shard, r: Ready) {.async.}
         on_disconnect*: proc (s: Shard) {.async.}
         on_invalid_session: proc (s: Shard, resumable: bool) {.async.}
-        message_create*: proc (s: Shard, m: Message) {.async.}
-        message_delete*: proc (s: Shard, m: Message, exists: bool) {.async.}
-        message_update*: proc (s: Shard, m: Message,
-                o: Option[Message], exists: bool) {.async.}
+        message_create*: proc (s: Shard, msg: Message) {.async.}
+        message_delete*: proc (s: Shard, msg: Message, exists: bool) {.async.}
+        message_update*: proc (s: Shard, msg: Message,
+                old: Option[Message], exists: bool) {.async.}
         message_reaction_add*: proc (s: Shard,
-                m: Message, u: User, e: Emoji, exists: bool) {.async.}
+                msg: Message, u: User, emj: Emoji, exists: bool) {.async.}
         message_reaction_remove*: proc (s: Shard,
-                m: Message, u: User,
-                r: Reaction, exists: bool) {.async.}
-        message_reaction_remove_all*: proc (s: Shard, m: Message,
+                msg: Message, u: User,
+                rtn: Reaction, exists: bool) {.async.}
+        message_reaction_remove_all*: proc (s: Shard, msg: Message,
                 exists: bool) {.async.}
         message_reaction_remove_emoji*: proc (s: Shard,
-                m: Message, e: Emoji, exists: bool) {.async.}
+                msg: Message, emj: Emoji, exists: bool) {.async.}
         message_delete_bulk*: proc (s: Shard, m: seq[tuple[
                 msg: Message, exists: bool]]) {.async.}
         channel_create*: proc (s: Shard, g: Option[Guild],
-                c: Option[GuildChannel], d: Option[DMChannel]) {.async.}
+                c: Option[GuildChannel], dm: Option[DMChannel]) {.async.}
         channel_update*: proc (s: Shard, g: Guild,
-                c: GuildChannel, o: Option[GuildChannel]) {.async.}
+                c: GuildChannel, old: Option[GuildChannel]) {.async.}
         channel_delete*: proc (s: Shard, g: Option[Guild],
-                c: Option[GuildChannel], d: Option[DMChannel]) {.async.}
-        channel_pins_update*: proc (s: Shard, cid: string,
+                c: Option[GuildChannel], dm: Option[DMChannel]) {.async.}
+        channel_pins_update*: proc (s: Shard, chan_id: string,
                 g: Option[Guild], last_pin: Option[string]) {.async.}
         presence_update*: proc (s: Shard, p: Presence,
-                o: Option[Presence]) {.async.}
-        typing_start*: proc (s: Shard, t: TypingStart) {.async.}
-        guild_emojis_update*: proc (s: Shard, g: Guild, e: seq[Emoji]) {.async.}
+                old: Option[Presence]) {.async.}
+        typing_start*: proc (s: Shard, evt: TypingStart) {.async.}
+        guild_emojis_update*: proc (s: Shard, g: Guild;
+                emojis: seq[Emoji]) {.async.}
         guild_ban_add*, guild_ban_remove*: proc (s: Shard, g: Guild,
                 u: User) {.async.}
+        guild_audit_log_entry_create*: proc (s: Shard; g: Guild;
+                entry: AuditLogEntry) {.async.}
         guild_integrations_update*: proc (s: Shard, g: Guild) {.async.}
         guild_member_add*, guild_member_remove*: proc (s: Shard, g: Guild,
                 m: Member) {.async.}
         guild_member_update*: proc (s: Shard, g: Guild,
-                m: Member, o: Option[Member]) {.async.}
-        guild_update*: proc (s: Shard, g: Guild, o: Option[Guild]) {.async.}
+                m: Member, old: Option[Member]) {.async.}
+        guild_update*: proc (s: Shard,g: Guild,old: Option[Guild]) {.async.}
         guild_create*, guild_delete*: proc (s: Shard, g: Guild) {.async.}
         guild_members_chunk*: proc (s: Shard, g: Guild,
                 m: GuildMembersChunk) {.async.}
         guild_role_create*, guild_role_delete*: proc (s: Shard, g: Guild,
                 r: Role) {.async.}
         guild_role_update*: proc (s: Shard, g: Guild,
-                r: Role, o: Option[Role]) {.async.}
+                r: Role, old: Option[Role]) {.async.}
         invite_create*: proc (s: Shard, i: InviteCreate) {.async.}
         invite_delete*: proc (s: Shard, g: Option[Guild],
-                cid, code: string) {.async.}
+                chan_id, code: string) {.async.}
         user_update*: proc (s: Shard, u: User) {.async.}
         voice_state_update*: proc (s: Shard, v: VoiceState,
-                o: Option[VoiceState]) {.async.}
+                old: Option[VoiceState]) {.async.}
         voice_server_update*: proc (s: Shard, g: Guild,
                 token: string, endpoint: Option[string], initial: bool) {.async.}
         webhooks_update*: proc (s: Shard, g: Guild, c: GuildChannel) {.async.}
@@ -850,32 +918,45 @@ type
                 g: Option[Guild], a: ApplicationCommand) {.async.}
         thread_create*: proc (s: Shard, g: Guild, c: GuildChannel) {.async.}
         thread_update*: proc (s: Shard, g: Guild,
-                c: GuildChannel, o: Option[GuildChannel]) {.async.}
+                c: GuildChannel, old: Option[GuildChannel]) {.async.}
         thread_delete*: proc (s: Shard, g: Guild,
                 c: GuildChannel, exists: bool) {.async.}
         thread_list_sync*: proc (s: Shard, e: ThreadListSync) {.async.}
-        thread_member_update*: proc (s: Shard, g: Guild, t: ThreadMember) {.async.}
+        thread_member_update*: proc (s: Shard,g: Guild,t: ThreadMember) {.async.}
         thread_members_update*: proc (s: Shard, e: ThreadMembersUpdate) {.async.}
-        stage_instance_create*: proc (s: Shard, g: Guild, i: StageInstance) {.async.}
+        stage_instance_create*: proc (s: Shard, g: Guild;
+                i: StageInstance) {.async.}
         stage_instance_update*: proc (s: Shard, g: Guild,
-                i: StageInstance, o: Option[StageInstance]) {.async.}
+                si: StageInstance, old: Option[StageInstance]) {.async.}
         stage_instance_delete*: proc (s: Shard, g: Guild,
-                i: StageInstance, exists: bool) {.async.}
+                si: StageInstance, exists: bool) {.async.}
         guild_stickers_update*: proc (s: Shard, g: Guild,
                 stickers: seq[Sticker]) {.async.}
         guild_scheduled_event_create*, guild_scheduled_event_delete*: proc (
-                s: Shard, g: Guild, e: GuildScheduledEvent) {.async.}
+                s: Shard, g: Guild, evt: GuildScheduledEvent) {.async.}
         guild_scheduled_event_update*: proc (s: Shard,
-                    g: Guild, e: GuildScheduledEvent, o: Option[GuildScheduledEvent]
+                    g: Guild, evt: GuildScheduledEvent;
+                    old: Option[GuildScheduledEvent]
             ) {.async.}
         guild_scheduled_event_user_add*,guild_scheduled_event_user_remove*: proc(
-                s: Shard, g: Guild, e: GuildScheduledEvent, u: User) {.async.}
-        auto_moderation_rule_create*,auto_moderation_rule_update*: proc(s:Shard,
+            s: Shard, g: Guild, evt: GuildScheduledEvent, u: User) {.async.}
+        auto_moderation_rule_create*,auto_moderation_rule_update*: proc(s:Shard;
             g: Guild, r: AutoModerationRule) {.async.}
-        auto_moderation_rule_delete*: proc(s: Shard,
+        auto_moderation_rule_delete*: proc(s: Shard;
             g: Guild, r: AutoModerationRule) {.async.}
         auto_moderation_action_execution*: proc(s: Shard,
             g: Guild, e: ModerationActionExecution) {.async.}
+
+    WaitHandler = proc (data: pointer): bool {.closure.}
+      ## This proc will filter an object to see what it should do.
+      ## It should be a closure that can complete a future it has already returned.
+      ## If the filter passes then it should return true to let the WaitTable know it can remove it
+      ##
+      ## The data pointer will be a tuple containing parameters relating to that event.
+      ## Parameters are the same as the normal handlers except without the shard parameter
+    WaitTable = array[DispatchEvent, seq[WaitHandler]]
+      ## Mapping of event to handlers that are awaiting for something to happen via that event.
+      ## e.g. MessageCreate: @[waitingForDeletiong(), waitingForResponse()]
 
 proc kind*(c: CacheTable, channel_id: string): ChannelType =
     ## Checks for a channel kind. (Shortcut)
@@ -898,3 +979,11 @@ proc `$`*(e: Emoji): string =
             e.name.get("?") & ":" & e.id.get
         else:
             e.name.get("?")
+
+proc getCurrentDiscordHttpError*(): DiscordHttpError =
+    ## Use this proc instead of getCurrentException() for advanced details.
+    let err = getCurrentException()
+    if err.isNil:
+        result = nil
+    else:
+        result = cast[DiscordHttpError](err)
